@@ -17,10 +17,14 @@ class Entry{
         this->BG = BG;
         this->event = event;
     }
-    std::chrono::sys_seconds getTimestamp();
-    unsigned getBG();
-    
+    std::chrono::sys_seconds getTimestamp() const;
+    unsigned getBG() const;
+    const std::string& getEvent() const;
 };
+
+inline std::chrono::sys_seconds Entry::getTimestamp() const { return timestamp; }
+inline unsigned Entry::getBG() const { return BG; }
+inline const std::string& Entry::getEvent() const { return event; }
 
 // parses CSV date "YYYY/MM/DD" and time "HH:MM:SS"; returns nothing if either is malformed or out of range
 std::optional<std::chrono::sys_seconds> toTimestamp(const std::string& date, const std::string& time){
