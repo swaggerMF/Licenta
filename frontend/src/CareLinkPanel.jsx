@@ -6,9 +6,10 @@ export default function CareLinkPanel({ onEntries }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState({ state: 'idle', message: '', revision: 0 });
   const [error, setError] = useState('');
+  const [connectionError, setConnectionError] = useState('');
   const [busy, setBusy] = useState(false);
   const dialog = useRef(null);
-  const revision = useRef(0);
+  const dataVersion = useRef(null);
   const callback = useRef(onEntries);
   callback.current = onEntries;
   const active = !['idle', 'error'].includes(status.state);
@@ -21,33 +22,52 @@ export default function CareLinkPanel({ onEntries }) {
   useEffect(() => {
     const controller = new AbortController();
     let timer;
+    let polling = false;
     async function poll() {
+      if (controller.signal.aborted || polling) return;
+      clearTimeout(timer);
+      polling = true;
       try {
         const next = await carelinkRequest('/api/carelink/status', undefined, controller.signal);
         if (controller.signal.aborted) return;
         setStatus(next);
-        if (!next.revision) revision.current = 0;
-        if (next.revision > revision.current) {
+        if (!next.dataVersion) dataVersion.current = null;
+        if (next.dataVersion && next.dataVersion !== dataVersion.current) {
           const result = await carelinkRequest('/api/carelink/entries', undefined, controller.signal);
           if (controller.signal.aborted) return;
-          callback.current(result.entries);
-          revision.current = result.revision;
+          if (result.dataVersion && result.dataVersion !== dataVersion.current) {
+            callback.current(result.entries, { focusDate: result.importedLatest });
+            dataVersion.current = result.dataVersion;
+          }
         }
+        setConnectionError('');
       } catch (reason) {
-        if (!controller.signal.aborted && open) setError(reason.message);
+        if (!controller.signal.aborted) setConnectionError(reason.message);
       } finally {
+        polling = false;
         if (!controller.signal.aborted) timer = setTimeout(poll, 2000);
       }
     }
+    const resume = () => { if (document.visibilityState === 'visible') poll(); };
+    window.addEventListener('focus', resume);
+    document.addEventListener('visibilitychange', resume);
     poll();
-    return () => { controller.abort(); clearTimeout(timer); };
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      window.removeEventListener('focus', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
   }, [open]);
 
   async function action(path, body) {
     setBusy(true);
     setError('');
     try { setStatus(await carelinkRequest(path, body)); }
-    catch (reason) { setError(reason.message); }
+    catch (reason) {
+      if (reason.code === 'CONNECTION_UNAVAILABLE') setConnectionError(reason.message);
+      else setError(reason.message);
+    }
     finally { setBusy(false); }
   }
 
@@ -68,6 +88,7 @@ export default function CareLinkPanel({ onEntries }) {
     <dialog ref={dialog} className="carelink-dialog" onCancel={() => setOpen(false)} onClose={() => setOpen(false)} aria-labelledby="carelink-title">
       <div className="carelink-heading"><h2 id="carelink-title">Conectare CareLink</h2><button type="button" className="icon-button" aria-label="Închide" onClick={() => setOpen(false)}>×</button></div>
       {error && <div className="error" role="alert">{error}</div>}
+      {connectionError && <div className="error" role="status">{connectionError} Reconectarea se încearcă automat; calendarul rămâne disponibil.</div>}
       <div className="carelink-normal-login">
         <p className="carelink-help">Dacă CAPTCHA respinge autentificarea, folosește browserul tău obișnuit. Selectează țara și autentifică-te acolo, apoi descarcă Data Export (CSV).</p>
         <p className="carelink-help">La activare, aplicația urmărește doar CSV-urile noi din <strong>{status.downloadDirectory || 'folderul Downloads'}</strong> și importă automat exporturile CareLink. Fișierele existente sunt ignorate.</p>

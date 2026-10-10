@@ -6,9 +6,9 @@ import path from 'node:path';
 import { DownloadWatcher } from './download-watcher.mjs';
 import { CareLinkSession } from './carelink.mjs';
 
-function csv(bg) {
+function csv(bg, date = '2026/10/10') {
   const fields = Array(54).fill('');
-  fields[1] = '2026/10/10'; fields[2] = '12:00:00'; fields[34] = String(bg);
+  fields[1] = date; fields[2] = '12:00:00'; fields[34] = String(bg);
   return `header\n---;Sensor;---\ncolumns\n${fields.join(';')}\n`;
 }
 
@@ -83,4 +83,48 @@ test('normal-browser mode starts and stops watching without launching automation
   await session.disconnect();
   assert.equal(session.watcher, null);
   assert.equal(session.state, 'idle');
+});
+
+test('reopening CareLink keeps the watcher and imports a second month', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'carelink-month-test-'));
+  const previous = process.env.CARELINK_DOWNLOAD_DIR;
+  process.env.CARELINK_DOWNLOAD_DIR = directory;
+  const session = new CareLinkSession();
+  t.after(async () => {
+    await session.disconnect();
+    if (previous === undefined) delete process.env.CARELINK_DOWNLOAD_DIR;
+    else process.env.CARELINK_DOWNLOAD_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  });
+  await session.startNormalLogin();
+  const watcher = session.watcher;
+  await writeFile(path.join(directory, 'october.csv'), csv(150));
+  await session.sync(); await session.sync();
+  assert.equal(session.revision, 1);
+  const firstVersion = session.status().dataVersion;
+  assert.ok(firstVersion);
+  await session.startNormalLogin();
+  assert.equal(session.watcher, watcher);
+  assert.equal(session.revision, 1);
+  await writeFile(path.join(directory, 'september.csv'), csv(110, '2026/09/15'));
+  await session.sync(); await session.sync();
+  assert.equal(session.revision, 2);
+  assert.equal(session.entries[0].date, '2026-09-15');
+  assert.equal(session.entries[1].date, '2026-10-10');
+  assert.notEqual(session.status().dataVersion, firstVersion);
+  const secondVersion = session.status().dataVersion;
+  // Authentication can be restarted without losing the imported history.
+  await session.disconnect();
+  assert.equal(session.entries.length, 2);
+  await session.startNormalLogin();
+  await writeFile(path.join(directory, 'august.csv'), csv(100, '2026/08/15'));
+  await session.sync(); await session.sync();
+  assert.equal(session.revision, 3);
+  assert.notEqual(session.status().dataVersion, firstVersion);
+  assert.notEqual(session.status().dataVersion, secondVersion);
+  assert.equal(session.entries[0].date, '2026-08-15');
+  assert.deepEqual(session.entries.map(entry => entry.date), ['2026-08-15', '2026-09-15', '2026-10-10']);
+  await writeFile(path.join(directory, 'august-again.csv'), csv(100, '2026/08/15'));
+  await session.sync(); await session.sync();
+  assert.equal(session.entries.length, 3);
 });

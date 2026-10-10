@@ -26,6 +26,7 @@ test('local API protects credentials/data and routes imports through C++', async
     status() { return { state: this.state, revision: this.revision }; },
     startLogin(body) { this.credentials = body; this.state = 'awaiting_login'; },
     async disconnect() { this.state = 'idle'; },
+    addEntries: CareLinkSession.prototype.addEntries,
   };
   const app = createAppServer({ connector });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
@@ -47,6 +48,14 @@ test('local API protects credentials/data and routes imports through C++', async
   const imported = await fetch(`${base}/api/import`, { method: 'POST', headers, body: JSON.stringify({ csv }) });
   assert.equal(imported.status, 200);
   assert.equal((await imported.json()).entries[1].event, 'SENSOR_ERROR');
+  const augustCsv = csv.replaceAll('2026/10/10', '2026/08/15');
+  const earlier = await fetch(`${base}/api/import`, { method: 'POST', headers, body: JSON.stringify({ csv: augustCsv }) });
+  assert.equal((await earlier.json()).entries.length, 4);
+  await fetch(`${base}/api/import`, { method: 'POST', headers, body: JSON.stringify({ csv }) });
+  const history = await fetch(`${base}/api/carelink/entries`, { headers });
+  const accumulated = await history.json();
+  assert.equal(accumulated.entries.length, 4);
+  assert.equal(accumulated.importedLatest, '2026-10-10');
   const invalid = await fetch(`${base}/api/import`, { method: 'POST', headers, body: JSON.stringify({ csv: 'invalid' }) });
   assert.equal(invalid.status, 422);
   const disconnected = await fetch(`${base}/api/carelink/disconnect`, { method: 'POST', headers, body: '{}' });
@@ -69,7 +78,7 @@ test('a downloaded CSV updates the session and deletes its temporary file', asyn
     assert.equal(session.entries.length, 2);
     await assert.rejects(access(temporaryFile));
     await session.disconnect();
-    assert.equal(session.entries.length, 0);
+    assert.equal(session.entries.length, 2);
   } finally { await rm(fixture, { force: true }); }
 });
 
@@ -82,6 +91,41 @@ test('download failure and non-CSV files do not replace previous entries', async
   assert.equal(session.state, 'error');
   assert.deepEqual(session.entries, [{ bg: 100 }]);
   assert.equal(session.revision, 0);
+});
+
+test('downloads arriving together are all processed and merged', async () => {
+  let release;
+  const firstParsing = new Promise(resolve => { release = resolve; });
+  let parsingStarted;
+  const started = new Promise(resolve => { parsingStarted = resolve; });
+  let parsed = 0;
+  const session = new CareLinkSession({ parseDownload: async () => {
+    const index = parsed++;
+    if (index === 0) { parsingStarted(); await firstParsing; }
+    return [{ date: index === 0 ? '2026-10-10' : '2026-08-15', time: '12:00:00', bg: 120, event: 'NONE' }];
+  } });
+  const download = { suggestedFilename: () => 'report.csv', saveAs: async () => {} };
+  const first = session.consumeDownload(download, session.generation);
+  await started;
+  const second = session.consumeDownload(download, session.generation);
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(session.entries.map(entry => entry.date), ['2026-08-15', '2026-10-10']);
+  assert.equal(session.revision, 2);
+});
+
+test('retained history does not prevent automatic export after a new login', async () => {
+  const session = new CareLinkSession();
+  session.addEntries([{ date: '2026-10-10', time: '12:00:00', bg: 120, event: 'NONE' }]);
+  await session.disconnect();
+  session.loginRevision = session.revision;
+  session.context = { pages: () => [{ url: () => 'https://carelink.minimed.com/app/reports' }] };
+  session.reportsLocator = () => ({ first: () => ({ isVisible: async () => true }) });
+  let synced = false;
+  session.sync = async () => { synced = true; };
+  await session.watchLogin(session.generation);
+  assert.equal(synced, true);
+  assert.equal(session.entries.length, 1);
 });
 
 test('disconnect while browser is launching prevents a stale login from reopening', async () => {

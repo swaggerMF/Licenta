@@ -13,7 +13,7 @@
     "prebuild": "npm run data",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test src/data.test.js server/*.test.mjs"
+    "test": "node --test src/*.test.js server/*.test.mjs"
   },
   "dependencies": {
     "playwright": "^1.64.0",

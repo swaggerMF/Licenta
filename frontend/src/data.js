@@ -22,6 +22,20 @@ export function parseCsv(text) {
   return entries;
 }
 
+// Overlapping exports describe the same reading by local timestamp and sensor event.
+export function mergeEntries(current, incoming) {
+  const readings = new Map();
+  for (const batch of [current, incoming]) {
+    for (const entry of batch) {
+      const key = JSON.stringify([entry.date, entry.time, entry.event || 'NONE']);
+      const previous = readings.get(key);
+      // A partial export must not erase a glucose value already available.
+      if (!previous || entry.bg !== null || previous.bg === null) readings.set(key, entry);
+    }
+  }
+  return [...readings.values()].sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+}
+
 export function groupDays(entries) {
   const days = new Map();
   for (const entry of entries) {
@@ -34,12 +48,15 @@ export function groupDays(entries) {
 }
 
 export function stats(entries) {
-  const values = entries.filter(entry => entry.bg !== null).map(entry => entry.bg);
-  if (!values.length) return null;
-  return {
-    mean: Math.round(values.reduce((a, b) => a + b, 0) / values.length),
-    min: Math.min(...values), max: Math.max(...values), count: values.length,
-  };
+  let count = 0, sum = 0, min = Infinity, max = -Infinity;
+  for (const { bg } of entries) {
+    if (bg === null) continue;
+    count++;
+    sum += bg;
+    min = Math.min(min, bg);
+    max = Math.max(max, bg);
+  }
+  return count ? { mean: Math.round(sum / count), min, max, count } : null;
 }
 
 export function chartSegments(entries) {

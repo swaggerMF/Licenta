@@ -21,7 +21,11 @@ npm run dev
 CSV_PATH="/cale/catre/export.csv" npm run dev
 ```
 
-După modificarea CSV-ului local, repornește serverul pentru regenerarea datelor. Importul manual trimite CSV-ul la serverul local, unde este procesat de C++; datele importate manual se păstrează în interfață până la reîncărcarea paginii.
+După modificarea CSV-ului local, repornește serverul pentru regenerarea datelor. Importul manual trimite CSV-ul la serverul local, unde este procesat de C++.
+
+Exporturile se adaugă la istoricul existent, atât prin **Importă CSV**, cât și prin CareLink. Dacă ai septembrie–octombrie și imporți august, calendarul păstrează toate cele trei luni și afișează perioada nou importată. Suprapunerile sunt unite după dată, oră și evenimentul senzorului, fără măsurători duplicate; pentru aceeași măsurătoare este folosită ultima valoare validă importată. Un câmp gol nu șterge o glicemie deja disponibilă, iar motivele distincte pentru date lipsă sunt păstrate.
+
+Istoricul importat rămâne în memoria serverului local la deconectarea/reconectarea CareLink și poate fi recuperat după reîncărcarea paginii. Nu este salvat permanent: după oprirea serverului, CSV-urile importate trebuie încărcate din nou. Datele inițiale din `data.json` se încarcă separat la pornirea paginii și sunt unite cu acest istoric.
 
 ## Conectare CareLink Personal
 
@@ -48,11 +52,11 @@ O CAPTCHA respinsă în browserul automat nu demonstrează că imaginile au fost
 5. După detectarea secțiunii Reports/Rapoarte, aplicația încearcă automat exportul CSV. Este folosită perioada selectată în CareLink; aplicația nu impune momentan un interval propriu.
 6. Dacă butonul nu poate fi detectat sau cere selectarea perioadei, deschide Reports în aceeași fereastră, alege perioada și apasă **Data Export (CSV)**. Descărcarea este interceptată automat, procesată de C++, iar calendarul este actualizat.
 
-**Sincronizează** repetă exportul în sesiunea curentă. **Deconectează** închide browserul și șterge sesiunea din memoria serverului. Datele deja afișate în calendar rămân până la importul următor sau reîncărcare.
+**Sincronizează** repetă exportul în sesiunea curentă. **Deconectează** închide browserul și sesiunea de autentificare, păstrând istoricul importat în memoria serverului local.
 
 Integrarea este un prototip local bazat pe automatizarea interfeței CareLink, nu pe un API oficial. Selecția țării și deschiderea formularului de autentificare au fost verificate pe site-ul real, fără credențiale. Detectarea Reports și declanșarea exportului după login necesită încă verificare cu un cont real; există preluarea descărcării manuale ca alternativă.
 
-Parola nu este scrisă în fișiere sau loguri; dacă este introdusă în aplicație, este folosită temporar pentru completarea formularului oficial. Sesiunea browserului și ultimul export CareLink sunt păstrate numai în memoria procesului. Fișierele temporare folosite pentru procesare sunt șterse după import. Nu sunt salvate capturi, urme de browser sau cookie-uri persistente.
+Parola nu este scrisă în fișiere sau loguri; dacă este introdusă în aplicație, este folosită temporar pentru completarea formularului oficial. Sesiunea browserului și istoricul exporturilor importate sunt păstrate numai în memoria procesului. Fișierele temporare folosite pentru procesare sunt șterse după import. Nu sunt salvate capturi, urme de browser sau cookie-uri persistente.
 
 Această versiune rulează pe calculatorul utilizatorului și ascultă doar pe loopback, cu cookie de sesiune HttpOnly și verificarea originii cererilor. Nu este un serviciu multiutilizator și nu trebuie expus ca backend public. Pe telefon se poate afișa ulterior interfața, dar automatizarea browserului și parserul C++ necesită această componentă locală sau o arhitectură de server separată.
 

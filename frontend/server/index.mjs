@@ -53,7 +53,7 @@ export function createAppServer({ connector = new CareLinkSession(), parseCsv = 
     if (request.method === 'POST' && !allowedOrigin(request.headers.origin, port)) return respond(response, 403, { error: 'Origine obligatorie pentru această operație.' });
     try {
       if (request.method === 'GET' && pathname === '/api/carelink/status') return respond(response, 200, connector.status());
-      if (request.method === 'GET' && pathname === '/api/carelink/entries') return respond(response, 200, { entries: connector.entries, revision: connector.revision });
+      if (request.method === 'GET' && pathname === '/api/carelink/entries') return respond(response, 200, { entries: connector.entries, revision: connector.revision, dataVersion: connector.dataVersion, importedLatest: connector.importedLatest });
       if (request.method === 'POST' && pathname === '/api/carelink/normal-login') {
         await connector.startNormalLogin();
         return respond(response, 200, connector.status());
@@ -81,7 +81,11 @@ export function createAppServer({ connector = new CareLinkSession(), parseCsv = 
       if (request.method === 'POST' && pathname === '/api/import') {
         const body = await readJson(request);
         if (typeof body.csv !== 'string') throw new Error('Lipsește fișierul CSV.');
-        try { return respond(response, 200, { entries: await parseCsv(body.csv) }); }
+        try {
+          const entries = await parseCsv(body.csv);
+          connector.addEntries(entries);
+          return respond(response, 200, { entries: connector.entries, importedLatest: connector.importedLatest });
+        }
         catch { return respond(response, 422, { error: 'CSV-ul nu a putut fi procesat de parserul C++. Verifică formatul exportului și compilatorul g++.' }); }
       }
       return respond(response, 404, { error: 'Rută inexistentă.' });

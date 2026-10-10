@@ -1,10 +1,12 @@
 import { chromium } from 'playwright';
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readDownloadedCsv } from './parser.mjs';
 import { DownloadWatcher, downloadsDirectory } from './download-watcher.mjs';
+import { mergeEntries } from '../src/data.js';
 
 const LOGIN_URL = 'https://carelink.minimed.com/app/login';
 const normalize = value => value.normalize('NFD').replace(/\p{M}/gu, '').trim().toLowerCase();
@@ -27,24 +29,34 @@ export class CareLinkSession {
     this.message = '';
     this.entries = [];
     this.revision = 0;
+    this.dataVersion = null;
     this.generation = 0;
     this.syncBusy = false;
+    this.downloadQueue = Promise.resolve();
   }
 
   status() {
-    return { state: this.state, message: this.message, revision: this.revision, updatedAt: this.updatedAt || null,
+    return { state: this.state, message: this.message, revision: this.revision, dataVersion: this.dataVersion, updatedAt: this.updatedAt || null,
       mode: this.normalMode ? 'normal' : 'automated', downloadDirectory: downloadsDirectory() };
   }
 
+  addEntries(entries) {
+    this.entries = mergeEntries(this.entries, entries);
+    this.importedLatest = entries.reduce((latest, entry) => entry.date > latest ? entry.date : latest, '');
+    this.revision++;
+    this.dataVersion = randomUUID();
+    this.updatedAt = new Date().toISOString();
+  }
+
   async startNormalLogin() {
+    // Opening another CareLink tab must not reset the active download monitor.
+    if (this.normalMode && this.watcher && !this.watcher.stopped) return;
     await this.disconnect();
     const generation = this.generation;
     this.normalMode = true;
     const watcher = new DownloadWatcher({ onEntries: entries => {
       if (generation !== this.generation) return;
-      this.entries = entries;
-      this.revision++;
-      this.updatedAt = new Date().toISOString();
+      this.addEntries(entries);
       this.state = 'ready';
       this.message = 'Exportul descărcat a fost preluat. Calendarul a fost actualizat.';
     } });
@@ -66,6 +78,7 @@ export class CareLinkSession {
   startLogin(credentials) {
     if (this.browser || this.normalMode || this.state === 'connecting') throw new Error('Există deja o sesiune. Deconectează-te înainte de o conectare nouă.');
     const generation = ++this.generation;
+    this.loginRevision = this.revision;
     this.state = 'connecting';
     this.message = 'Se deschide CareLink…';
     this.connect(credentials, generation).catch(async () => {
@@ -165,7 +178,7 @@ export class CareLinkSession {
         if (!/^https:\/\/carelink\.minimed\.(com|eu)\//.test(page.url())) continue;
         if (await visible(this.reportsLocator(page)) || await visible(this.exportLocator(page))) {
           this.page = page;
-          if (this.revision) return;
+          if (this.revision > this.loginRevision) return;
           this.state = 'connected';
           this.message = 'Conectat la CareLink.';
           await this.sync();
@@ -217,7 +230,14 @@ export class CareLinkSession {
     } finally { if (generation === this.generation) this.syncBusy = false; }
   }
 
-  async consumeDownload(download, generation) {
+  consumeDownload(download, generation) {
+    // Several exports may finish while the previous CSV is still being parsed.
+    const pending = this.downloadQueue.then(() => this.processDownload(download, generation));
+    this.downloadQueue = pending.catch(() => {});
+    return pending;
+  }
+
+  async processDownload(download, generation) {
     if (generation !== this.generation || this.parsingDownload) return;
     if (!/\.csv$/i.test(download.suggestedFilename())) return;
     this.parsingDownload = true;
@@ -230,9 +250,7 @@ export class CareLinkSession {
       await download.saveAs(filename);
       const entries = await this.parseDownload(filename);
       if (generation !== this.generation) return;
-      this.entries = entries;
-      this.revision++;
-      this.updatedAt = new Date().toISOString();
+      this.addEntries(entries);
       this.state = 'ready';
       this.message = 'Calendarul a fost actualizat.';
     } catch {
@@ -260,9 +278,7 @@ export class CareLinkSession {
     this.watcher = null;
     this.normalMode = false;
     await this.closeBrowser();
-    this.entries = [];
-    this.revision = 0;
-    this.updatedAt = null;
+    // Disconnect authentication and monitoring, retaining the imported history.
     this.state = 'idle';
     this.message = '';
     this.syncBusy = false;

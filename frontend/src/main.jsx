@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { groupDays, sensorReason, stats } from './data.js';
+import { groupDays, mergeEntries, sensorReason, stats } from './data.js';
 import Chart from './Chart.jsx';
 import CareLinkPanel from './CareLinkPanel.jsx';
 import { carelinkRequest } from './carelink-api.js';
@@ -21,6 +21,7 @@ function App() {
   const [error, setError] = useState('');
   const [importing, setImporting] = useState(false);
   const fileRef = useRef(null);
+  const dataLoaded = useRef(false);
   const days = useMemo(() => groupDays(entries), [entries]);
   const keys = useMemo(() => [...days.keys()].sort(), [days]);
   const monthPrefix = dateKey(month).slice(0, 7);
@@ -30,11 +31,14 @@ function App() {
   const selectedStats = useMemo(() => stats(selectedEntries), [selectedEntries]);
   const ceiling = useMemo(() => Math.max(300, Math.ceil(entries.reduce((max, entry) => Math.max(max, entry.bg ?? 0), 0) / 100) * 100), [entries]);
 
-  function loadEntries(data) {
-    const latest = data.map(entry => entry.date).sort().at(-1);
-    setEntries(data);
-    setSelected(latest || '');
-    if (latest) setMonth(new Date(localDate(latest).getFullYear(), localDate(latest).getMonth(), 1));
+  function loadEntries(data, { focus = true, focusDate } = {}) {
+    dataLoaded.current = true;
+    const latest = focusDate || data.reduce((latest, entry) => entry.date > latest ? entry.date : latest, '');
+    setEntries(current => focus ? mergeEntries(current, data) : mergeEntries(data, current));
+    if (focus && latest) {
+      setSelected(latest);
+      setMonth(new Date(localDate(latest).getFullYear(), localDate(latest).getMonth(), 1));
+    }
     setError('');
   }
   useEffect(() => {
@@ -42,8 +46,10 @@ function App() {
     fetch(`${import.meta.env.BASE_URL}data.json`).then(response => {
       if (!response.ok) throw new Error('Datele locale nu au putut fi încărcate. Poți importa un CSV.');
       return response.json();
-    }).then(data => { if (active) loadEntries(data); })
-      .catch(reason => { if (active) setError(reason.message); })
+    }).then(data => { if (active) loadEntries(data, { focus: !dataLoaded.current }); })
+      .catch(() => {
+        if (active && !dataLoaded.current) setError('Datele inițiale nu au putut fi încărcate. Verifică dacă aplicația locală rulează sau importă un CSV.');
+      })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
@@ -56,7 +62,7 @@ function App() {
       // Initialize the local session cookie, including when importing immediately after startup.
       await carelinkRequest('/api/carelink/status');
       const result = await carelinkRequest('/api/import', { csv: await file.text() });
-      loadEntries(result.entries);
+      loadEntries(result.entries, { focusDate: result.importedLatest });
     }
     catch (reason) { setError(reason.message); }
     finally { setImporting(false); event.target.value = ''; }

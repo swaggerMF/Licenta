@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chartSegments, glucoseColor, groupDays, parseCsv, sensorReason, stats } from './data.js';
+import { chartSegments, glucoseColor, groupDays, mergeEntries, parseCsv, sensorReason, stats } from './data.js';
 
 function row(date, time, bg, event = '') {
   const fields = Array(54).fill('');
@@ -9,6 +9,32 @@ function row(date, time, bg, event = '') {
   return fields.join(';');
 }
 const csv = rows => ['ignored pump rows', '----;Sensor;----', 'column headers', ...rows].join('\r\n');
+
+test('imports accumulate earlier months and deduplicate overlapping exports', () => {
+  const september = { date: '2026-09-15', time: '12:00:00', bg: 110, event: 'NONE' };
+  const october = { ...september, date: '2026-10-10', bg: 150 };
+  const august = { ...september, date: '2026-08-15', bg: 100 };
+  const original = [october, september];
+  const combined = mergeEntries(original, [august, september]);
+  assert.deepEqual(combined, [august, september, october]);
+  assert.deepEqual(mergeEntries(combined, [august, september, october]), combined);
+  assert.deepEqual(original, [october, september]);
+  assert.equal(stats(combined).count, 3);
+});
+
+test('overlaps keep sensor reasons and use new valid values without erasing existing glucose', () => {
+  const reading = { date: '2026-10-10', time: '12:00:00', bg: 120, event: 'NONE' };
+  const missing = { ...reading, bg: null };
+  const reason = { ...missing, event: 'SENSOR_ERROR' };
+  assert.deepEqual(mergeEntries([reading], [missing, reason, reason]), [reading, reason]);
+  assert.deepEqual(mergeEntries([missing], [reading]), [reading]);
+  assert.deepEqual(mergeEntries([reading], [{ ...reading, bg: 125 }]), [{ ...reading, bg: 125 }]);
+});
+
+test('statistics handle a long history without spreading all values into function arguments', () => {
+  assert.deepEqual(stats(Array.from({ length: 200000 }, (_, index) => ({ bg: index % 2 ? null : 120 }))),
+    { mean: 120, min: 120, max: 120, count: 100000 });
+});
 
 test('parses sensor rows, validates dates, and preserves local day boundaries', () => {
   const entries = parseCsv(csv([
