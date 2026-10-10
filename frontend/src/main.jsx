@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { groupDays, parseCsv, sensorReason, stats } from './data.js';
+import { groupDays, sensorReason, stats } from './data.js';
 import Chart from './Chart.jsx';
+import CareLinkPanel from './CareLinkPanel.jsx';
+import { carelinkRequest } from './carelink-api.js';
 import './styles.css';
 
 const EMPTY = [];
@@ -50,7 +52,12 @@ function App() {
     const file = event.target.files?.[0];
     if (!file) return;
     setImporting(true);
-    try { loadEntries(parseCsv(await file.text())); }
+    try {
+      // Initialize the local session cookie, including when importing immediately after startup.
+      await carelinkRequest('/api/carelink/status');
+      const result = await carelinkRequest('/api/import', { csv: await file.text() });
+      loadEntries(result.entries);
+    }
     catch (reason) { setError(reason.message); }
     finally { setImporting(false); event.target.value = ''; }
   }
@@ -76,7 +83,7 @@ function App() {
     <main>
       <section className="page-heading">
         <h1>Select a day. Observe patterns.</h1>
-        <div className="import-controls"><button className="primary-button" onClick={() => fileRef.current.click()} disabled={loading || importing}><span aria-hidden="true">↑</span> {importing ? 'Se importă…' : 'Importă CSV'}</button><input ref={fileRef} className="visually-hidden" aria-label="Importă fișier CSV" type="file" accept=".csv,text/csv" onChange={importFile} /></div>
+        <div className="import-controls"><CareLinkPanel onEntries={loadEntries} /><button className="primary-button" onClick={() => fileRef.current.click()} disabled={loading || importing}><span aria-hidden="true">↑</span> {importing ? 'Se importă…' : 'Importă CSV'}</button><input ref={fileRef} className="visually-hidden" aria-label="Importă fișier CSV" type="file" accept=".csv,text/csv" onChange={importFile} /></div>
       </section>
       {error && <div className="error" role="alert">{error}</div>}
       {loading ? <div className="empty-state" role="status">Se încarcă măsurătorile…</div> : !entries.length ? <div className="empty-state"><h2>Calendarul începe cu datele tale.</h2><p>Importă un export CSV care conține secțiunea Sensor pentru a vedea graficele zilnice.</p></div> : <>
