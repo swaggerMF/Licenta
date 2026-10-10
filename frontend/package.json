@@ -1,0 +1,23 @@
+{
+  "name": "glucose-calendar",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "data": "node scripts/export-data.mjs",
+    "predev": "npm run data",
+    "dev": "vite --host 127.0.0.1",
+    "prebuild": "npm run data",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test src/data.test.js"
+  },
+  "dependencies": {
+    "playwright": "^1.64.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "vite": "^6.1.0"
+  }
+}
