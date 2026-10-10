@@ -29,34 +29,24 @@ Istoricul importat rămâne în memoria serverului local la deconectarea/reconec
 
 ## Conectare CareLink Personal
 
-### Dacă CAPTCHA respinge autentificarea în fereastra automată
-
-Folosește **Deschide în browserul tău** din dialogul CareLink. Linkul deschide pagina oficială într-un tab al browserului în care folosești aplicația, fără automatizare Playwright. Selectează țara și autentifică-te acolo, apoi deschide Reports și descarcă **Data Export (CSV)**. În acest mod autentificarea și apăsarea exportului sunt manuale; preluarea CSV-ului și actualizarea calendarului sunt automate.
-
-Activarea acestui mod închide sesiunea automată și urmărește CSV-urile noi sau modificate în `~/Downloads` (sau `~/Descărcări`, dacă acesta există în locul Downloads). Fișierele deja existente la activare sunt ignorate. Exporturile trebuie să ajungă în folderul afișat în dialog; dacă browserul descarcă în altă parte, pornește aplicația astfel:
-
-```sh
-CARELINK_DOWNLOAD_DIR="/cale/catre/descarcari" npm run dev
-```
-
-Un fișier este procesat doar după ce dimensiunea și data modificării rămân stabile între două verificări. Fișierele parțiale `.crdownload` și CSV-urile care nu conțin secțiunea Sensor sunt ignorate. Originalele din Downloads nu sunt mutate sau șterse. **Oprește preluarea** oprește monitorizarea folderului; nu deconectează contul din browserul obișnuit. Pentru fișiere descărcate înainte de activare sau salvate în alt folder rămâne disponibil **Importă CSV**.
-
-O CAPTCHA respinsă în browserul automat nu demonstrează că imaginile au fost selectate greșit. Dacă autentificarea funcționează în browserul obișnuit, mediul sesiunii automate este o cauză posibilă; acest mod evită automatizarea autentificării, fără să modifice sau să încerce să rezolve CAPTCHA.
+La deschidere apare o pagină cu **Login with CareLink** și opțiunea secundară **Import CSV**. Datele locale existente pot fi deschise cu **Continuă cu datele încărcate**; istoricul deja importat pe server se recuperează automat.
 
 ### Fluxul experimental cu browser automat
 
-1. Apasă **Conectează CareLink** și selectează țara contului.
-2. Introdu utilizatorul/emailul și parola, sau lasă ambele câmpuri goale pentru a le completa direct pe pagina oficială.
-3. Apasă **Continuă în CareLink**. Aplicația deschide un browser separat, selectează țara și deschide formularul oficial. Pentru România a fost verificată redirecționarea către `carelink-login.minimed.eu`.
-4. Completează în fereastra CareLink orice pas suplimentar de autentificare, inclusiv codul de verificare dacă este cerut.
-5. După detectarea secțiunii Reports/Rapoarte, aplicația încearcă automat exportul CSV. Este folosită perioada selectată în CareLink; aplicația nu impune momentan un interval propriu.
-6. Dacă butonul nu poate fi detectat sau cere selectarea perioadei, deschide Reports în aceeași fereastră, alege perioada și apasă **Data Export (CSV)**. Descărcarea este interceptată automat, procesată de C++, iar calendarul este actualizat.
+1. Apasă **Login with CareLink**, apoi **Continuă în CareLink**.
+2. În fereastra oficială CareLink, alege țara contului și limba **English**, apoi continuă spre formularul de autentificare. Țara se selectează direct în CareLink.
+3. Introdu utilizatorul și parola direct în fereastra oficială, apoi completează eventualul CAPTCHA sau cod de verificare. Interfața aplicației nu mai cere parola.
+4. Lasă fereastra CareLink deschisă și revino în aplicație. După detectarea autentificării în Dashboard, aplicația deschide automat `/app/reports` pe domeniul sesiunii existente. După confirmarea loginului, fereastra CareLink este minimizată automat, iar aplicația solicită focalizarea propriei ferestre. Revenirea în prim-plan depinde de regulile browserului și ale desktopului. Dialogul afișează un calendar cu date în format **zz.ll.aaaa**, săptămâni începând luni, interval evidențiat și opțiuni rapide pentru ultimele 7/30 de zile încheiate sau luna curentă până ieri. Ziua de azi poate să nu fie disponibilă încă în CareLink. În prima zi a lunii, scurtătura pentru luna curentă este dezactivată. Login-ul nu pornește automat un export.
+5. Alege perioada și apasă **Descarcă perioada**. Backendul revine în Reports dacă fereastra este în Dashboard, deschide calendarul, selectează anul, luna și zilele, apoi apasă Apply. Așteaptă confirmarea fiecărei selecții; ziua este identificată în luna aleasă fără interpretarea etichetelor de dată ca format american. Pornește exportul numai după confirmarea datelor și a perioadei afișate în Reports; dacă CareLink scurtează intervalul cerut, exportul este oprit. CSV-ul este procesat de C++ și adăugat istoricului existent.
+6. Dacă selectorul CareLink nu poate fi identificat sau nu acceptă valorile, dialogul indică pasul nereușit, fără să declanșeze exportul. Activarea selectorului și încărcarea Reports au o limită de 12 secunde; celelalte operații de calendar au câte 5 secunde. Erorile disting încărcarea selectorului, apăsarea lui și afișarea calendarului. În fereastra minimizată, controalele sunt activate prin handlerul DOM, fără a aștepta stabilizarea animațiilor; controalele dezactivate nu sunt activate. Poți selecta perioada și apăsa **Data Export (CSV)** în aceeași fereastră CareLink; descărcarea este preluată automat.
 
-**Sincronizează** repetă exportul în sesiunea curentă. **Deconectează** închide browserul și sesiunea de autentificare, păstrând istoricul importat în memoria serverului local.
+Dacă ai ajuns la `https://carelink.minimed.eu/app/dashboard`, dar aplicația încă cere autentificarea, apasă **Verifică sesiunea**. Acest buton citește starea ferestrei existente, fără să retrimită credențialele. Detectarea recunoaște dashboard-ul încărcat, meniuri localizate și pagini Reports incluse în cadre CareLink; un formular de login vizibil sau o pagină goală nu confirmă sesiunea. Verificarea continuă și la actualizările automate ale stării, inclusiv după expirarea perioadei inițiale de așteptare.
 
-Integrarea este un prototip local bazat pe automatizarea interfeței CareLink, nu pe un API oficial. Selecția țării și deschiderea formularului de autentificare au fost verificate pe site-ul real, fără credențiale. Detectarea Reports și declanșarea exportului după login necesită încă verificare cu un cont real; există preluarea descărcării manuale ca alternativă.
+**CareLink · Alege perioada** permite descărcarea altor intervale în aceeași sesiune. Sesiunea este reutilizată cât timp fereastra rămâne deschisă și CareLink o acceptă; nu este menținută prin încercări automate de autentificare.
 
-Parola nu este scrisă în fișiere sau loguri; dacă este introdusă în aplicație, este folosită temporar pentru completarea formularului oficial. Sesiunea browserului și istoricul exporturilor importate sunt păstrate numai în memoria procesului. Fișierele temporare folosite pentru procesare sunt șterse după import. Nu sunt salvate capturi, urme de browser sau cookie-uri persistente.
+Integrarea este un prototip local bazat pe automatizarea interfeței CareLink, nu pe un API oficial. Deschiderea paginii publice CareLink poate fi verificată fără credențiale; autentificarea este integral manuală. Selectorul de calendar a fost adaptat după componentele publice CareLink. Selectarea intervalului și descărcarea CSV au teste cu pagini simulate în Chromium care reproduc structura calendarului, inclusiv navigarea din Dashboard fără link Reports, formate de dată europene, selecții asincrone, intervale între luni, o singură zi, date indisponibile și perioade scurtate de furnizor. Un selector necunoscut nu declanșează exportul. Compatibilitatea cu selectorul de date disponibil în contul real necesită verificare după autentificare; CSV-urile pot fi importate și manual din aplicație.
+
+În fluxul de test, parola se introduce direct în pagina oficială CareLink. Aplicația nu completează credențiale, nu trimite formularul de login și nu acceptă sau închide automat avertismente, consimțăminte ori mesaje. Dialogurile vizibile de confirmare împiedică preluarea automată a sesiunii până când sunt închise de utilizator. Sesiunea browserului și istoricul exporturilor importate sunt păstrate numai în memoria procesului. Fișierele temporare folosite pentru procesare sunt șterse după import. Nu sunt salvate capturi, urme de browser sau cookie-uri persistente.
 
 Această versiune rulează pe calculatorul utilizatorului și ascultă doar pe loopback, cu cookie de sesiune HttpOnly și verificarea originii cererilor. Nu este un serviciu multiutilizator și nu trebuie expus ca backend public. Pe telefon se poate afișa ulterior interfața, dar automatizarea browserului și parserul C++ necesită această componentă locală sau o arhitectură de server separată.
 
@@ -84,6 +74,6 @@ npm test
 npm run preview
 ```
 
-Pentru conectare și import în modul preview, pornește și `npm run server` într-un alt terminal. Testele verifică API-ul local, importul real în C++, preluarea și curățarea descărcărilor, precum și gestionarea sesiunilor. Verificarea opțională `npm run check:carelink` accesează doar pagina publică, selectează România și verifică formularul oficial, fără autentificare.
+Pentru conectare și import în modul preview, pornește și `npm run server` într-un alt terminal. Testele verifică API-ul local, importul real în C++, preluarea și curățarea descărcărilor, precum și gestionarea sesiunilor. Verificarea opțională `npm run check:carelink` accesează doar pagina publică, verifică deschiderea paginii oficiale de login, fără selectarea țării, apăsarea vreunui buton sau autentificare.
 
 Build-ul include datele CSV locale în `dist/data.json`. Fișierele CSV și JSON-ul generat sunt ignorate de Git. O eventuală publicare a directorului `dist` include și măsurătorile exportate. Publicarea fișierelor statice nu include serverul local CareLink.
