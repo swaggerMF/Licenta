@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { CareLinkSession } from './carelink.mjs';
 import { parseCsvText } from './parser.mjs';
+import { validateRange } from './report-range.mjs';
 
 const MAX_BODY = 20 * 1024 * 1024;
 
@@ -52,26 +53,35 @@ export function createAppServer({ connector = new CareLinkSession(), parseCsv = 
     if (!['GET', 'POST'].includes(request.method)) return respond(response, 405, { error: 'Metodă nepermisă.' });
     if (request.method === 'POST' && !allowedOrigin(request.headers.origin, port)) return respond(response, 403, { error: 'Origine obligatorie pentru această operație.' });
     try {
-      if (request.method === 'GET' && pathname === '/api/carelink/status') return respond(response, 200, connector.status());
+      if (request.method === 'GET' && pathname === '/api/carelink/status') {
+        if (connector.state === 'awaiting_login') await connector.checkLogin?.();
+        return respond(response, 200, connector.status());
+      }
       if (request.method === 'GET' && pathname === '/api/carelink/entries') return respond(response, 200, { entries: connector.entries, revision: connector.revision, dataVersion: connector.dataVersion, importedLatest: connector.importedLatest });
-      if (request.method === 'POST' && pathname === '/api/carelink/normal-login') {
-        await connector.startNormalLogin();
+      if (request.method === 'POST' && pathname === '/api/carelink/check-login') {
+        if (!connector.context) throw new Error('Fereastra CareLink nu mai este deschisă. Reconectează-te.');
+        const connected = await connector.checkLogin();
+        if (!connected && connector.state === 'awaiting_login') connector.message = 'Nu am confirmat încă sesiunea. În fereastra CareLink, deschide dashboard-ul sau Reports, apoi apasă din nou Verifică sesiunea.';
         return respond(response, 200, connector.status());
       }
       if (request.method === 'POST' && pathname === '/api/carelink/login') {
         const body = await readJson(request);
-        if (typeof body.country !== 'string' || !body.country.trim() || body.country.length > 100) throw new Error('Selectează țara contului CareLink.');
+        if (body.country !== undefined && (typeof body.country !== 'string' || !body.country.trim() || body.country.length > 100)) throw new Error('Țară CareLink invalidă.');
         const username = body.username ?? '';
         const password = body.password ?? '';
         if (typeof username !== 'string' || typeof password !== 'string' || username.length > 320 || password.length > 1024) throw new Error('Date de autentificare invalide.');
         if (Boolean(username) !== Boolean(password)) throw new Error('Completează utilizatorul și parola sau lasă ambele câmpuri goale pentru autentificare în CareLink.');
-        connector.startLogin({ country: body.country.trim(), username, password });
+        connector.startLogin({ country: body.country?.trim(), username, password });
         body.password = '';
         return respond(response, 202, connector.status());
       }
       if (request.method === 'POST' && pathname === '/api/carelink/sync') {
-        if (!connector.context && !connector.normalMode) throw new Error('Conectează-te mai întâi la CareLink.');
-        connector.sync().catch(() => {});
+        const body = await readJson(request);
+        const range = body.range === undefined ? undefined : validateRange(body.range);
+        if (!connector.context) throw new Error('Conectează-te mai întâi la CareLink.');
+        if (range && !connector.authenticated) throw new Error('Finalizează autentificarea în fereastra CareLink.');
+        if (connector.syncBusy || connector.parsingDownload) throw new Error('Un export este deja în curs.');
+        connector.sync(range).catch(() => {});
         return respond(response, 202, connector.status());
       }
       if (request.method === 'POST' && pathname === '/api/carelink/disconnect') {

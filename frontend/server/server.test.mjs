@@ -41,6 +41,9 @@ test('local API protects credentials/data and routes imports through C++', async
   assert.equal((await fetch(`${base}/api/carelink/status`, { headers: { Cookie: `carelink_session=${'é'.repeat(64)}` } })).status, 401);
   assert.equal((await fetch(`${base}/api/carelink/login`, { method: 'POST', headers: { ...headers, Origin: 'https://evil.example' }, body: JSON.stringify({ country: 'România' }) })).status, 403);
   assert.equal((await fetch(`${base}/api/carelink/login`, { method: 'POST', headers, body: JSON.stringify({ country: 'România', username: 'example', password: '' }) })).status, 400);
+  const manualLogin = await fetch(`${base}/api/carelink/login`, { method: 'POST', headers, body: '{}' });
+  assert.equal(manualLogin.status, 202);
+  assert.equal(connector.credentials.country, undefined);
   const login = await fetch(`${base}/api/carelink/login`, { method: 'POST', headers, body: JSON.stringify({ country: 'România', username: 'example', password: 'test-secret' }) });
   assert.equal(login.status, 202);
   assert.equal(connector.credentials.country, 'România');
@@ -114,18 +117,27 @@ test('downloads arriving together are all processed and merged', async () => {
   assert.equal(session.revision, 2);
 });
 
-test('retained history does not prevent automatic export after a new login', async () => {
+test('period API validates dates and passes the requested range to the authenticated session', async t => {
   const session = new CareLinkSession();
-  session.addEntries([{ date: '2026-10-10', time: '12:00:00', bg: 120, event: 'NONE' }]);
-  await session.disconnect();
-  session.loginRevision = session.revision;
-  session.context = { pages: () => [{ url: () => 'https://carelink.minimed.com/app/reports' }] };
-  session.reportsLocator = () => ({ first: () => ({ isVisible: async () => true }) });
-  let synced = false;
-  session.sync = async () => { synced = true; };
-  await session.watchLogin(session.generation);
-  assert.equal(synced, true);
-  assert.equal(session.entries.length, 1);
+  session.context = {};
+  session.authenticated = true;
+  let requested;
+  session.sync = async range => { requested = range; };
+  const app = createAppServer({ connector: session });
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const status = await fetch(`${base}/api/carelink/status`);
+  const headers = { Origin: base, Cookie: status.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' };
+  const post = range => fetch(`${base}/api/carelink/sync`, { method: 'POST', headers, body: JSON.stringify({ range }) });
+  assert.equal((await post({ from: '2026-02-30', to: '2026-03-01' })).status, 400);
+  assert.equal((await post({ from: '2026-10-10', to: '2026-08-01' })).status, 400);
+  assert.equal(requested, undefined);
+  const range = { from: '2026-08-01', to: '2026-08-31' };
+  assert.equal((await post(range)).status, 202);
+  assert.deepEqual(requested, range);
+  session.authenticated = false;
+  assert.equal((await post(range)).status, 400);
 });
 
 test('disconnect while browser is launching prevents a stale login from reopening', async () => {

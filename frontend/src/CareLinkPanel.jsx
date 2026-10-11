@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
+import DateRangePicker from './DateRangePicker.jsx';
+import { dateKey, lastCompletedDay } from './range-dates.js';
 import { carelinkRequest } from './carelink-api.js';
-import { CARELINK_COUNTRIES } from './carelink-countries.js';
 
-export default function CareLinkPanel({ onEntries }) {
+export default function CareLinkPanel({ onEntries, onAuthenticated, landing = false }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState({ state: 'idle', message: '', revision: 0 });
   const [error, setError] = useState('');
@@ -10,9 +11,25 @@ export default function CareLinkPanel({ onEntries }) {
   const [busy, setBusy] = useState(false);
   const dialog = useRef(null);
   const dataVersion = useRef(null);
+  const loginRequested = useRef(false);
   const callback = useRef(onEntries);
   callback.current = onEntries;
+  const authenticatedCallback = useRef(onAuthenticated);
+  authenticatedCallback.current = onAuthenticated;
+  const [from, setFrom] = useState(() => `${lastCompletedDay(dateKey(new Date())).slice(0, 7)}-01`);
+  const [to, setTo] = useState(() => lastCompletedDay(dateKey(new Date())));
   const active = !['idle', 'error'].includes(status.state);
+
+  useEffect(() => {
+    if (status.authenticated) {
+      window.focus();
+      authenticatedCallback.current?.();
+      if (loginRequested.current) {
+        loginRequested.current = false;
+        setOpen(true);
+      }
+    }
+  }, [status.authenticated, status.windowBackgrounded]);
 
   useEffect(() => {
     if (open) dialog.current.showModal();
@@ -37,6 +54,7 @@ export default function CareLinkPanel({ onEntries }) {
           if (controller.signal.aborted) return;
           if (result.dataVersion && result.dataVersion !== dataVersion.current) {
             callback.current(result.entries, { focusDate: result.importedLatest });
+            setOpen(false);
             dataVersion.current = result.dataVersion;
           }
         }
@@ -63,7 +81,11 @@ export default function CareLinkPanel({ onEntries }) {
   async function action(path, body) {
     setBusy(true);
     setError('');
-    try { setStatus(await carelinkRequest(path, body)); }
+    try {
+      const next = await carelinkRequest(path, body);
+      setStatus(next);
+      return next;
+    }
     catch (reason) {
       if (reason.code === 'CONNECTION_UNAVAILABLE') setConnectionError(reason.message);
       else setError(reason.message);
@@ -71,39 +93,38 @@ export default function CareLinkPanel({ onEntries }) {
     finally { setBusy(false); }
   }
 
-  async function login(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const values = new FormData(form);
-    const body = { country: values.get('country'), username: values.get('username').trim(), password: values.get('password') };
-    form.elements.password.value = '';
-    await action('/api/carelink/login', body);
-    body.password = '';
+  async function login() {
+    loginRequested.current = true;
+    const next = await action('/api/carelink/login', {});
+    if (!next) loginRequested.current = false;
   }
 
   return <>
-    <button className="secondary-button" onClick={() => { setError(''); setOpen(true); }}>
-      {status.state === 'ready' ? 'CareLink actualizat' : status.state === 'syncing' ? 'Se sincronizează…' : 'Conectează CareLink'}
+    <button className={landing ? 'primary-button' : 'secondary-button'} disabled={busy || (active && !status.authenticated)}
+      onClick={() => { setError(''); if (status.authenticated) setOpen(true); else login(); }}>
+      {status.authenticated ? 'CareLink · Alege perioada' : busy || status.state === 'connecting' ? 'Se deschide CareLink…' : status.state === 'awaiting_login' ? 'Autentificare în CareLink…' : landing ? 'Login with CareLink' : 'Conectează CareLink'}
     </button>
+    {!open && !status.authenticated && <div className="carelink-entry-feedback">
+      {error && <p className="error" role="alert">{error}</p>}
+      {connectionError && <p className="error" role="status">{connectionError}</p>}
+      {active && status.message && <p className="carelink-help" role="status">{status.message}</p>}
+      {status.state === 'awaiting_login' && <button className="text-button" disabled={busy} onClick={() => action('/api/carelink/check-login', {})}>Verifică sesiunea</button>}
+      {status.state === 'error' && <button className="text-button" disabled={busy} onClick={() => action('/api/carelink/disconnect', {})}>Resetează sesiunea</button>}
+    </div>}
     <dialog ref={dialog} className="carelink-dialog" onCancel={() => setOpen(false)} onClose={() => setOpen(false)} aria-labelledby="carelink-title">
-      <div className="carelink-heading"><h2 id="carelink-title">Conectare CareLink</h2><button type="button" className="icon-button" aria-label="Închide" onClick={() => setOpen(false)}>×</button></div>
+      <div className="carelink-heading"><h2 id="carelink-title">{status.authenticated ? 'Alege perioada' : 'Conectare CareLink'}</h2><button type="button" className="icon-button" aria-label="Închide" onClick={() => setOpen(false)}>×</button></div>
       {error && <div className="error" role="alert">{error}</div>}
       {connectionError && <div className="error" role="status">{connectionError} Reconectarea se încearcă automat; calendarul rămâne disponibil.</div>}
-      <div className="carelink-normal-login">
-        <p className="carelink-help">Dacă CAPTCHA respinge autentificarea, folosește browserul tău obișnuit. Selectează țara și autentifică-te acolo, apoi descarcă Data Export (CSV).</p>
-        <p className="carelink-help">La activare, aplicația urmărește doar CSV-urile noi din <strong>{status.downloadDirectory || 'folderul Downloads'}</strong> și importă automat exporturile CareLink. Fișierele existente sunt ignorate.</p>
-        <a className="secondary-button" href="https://carelink.minimed.com/app/login" target="_blank" rel="noopener noreferrer"
-          aria-disabled={busy} onClick={event => { if (busy) event.preventDefault(); else action('/api/carelink/normal-login', {}); }}>Deschide în browserul tău</a>
-      </div>
-      {!active && <form onSubmit={login} className="carelink-form">
-        <label>Țara<select name="country" defaultValue="România" required>{CARELINK_COUNTRIES.map(country => <option key={country} value={country}>{country}</option>)}</select></label>
-        <label>Email / utilizator<input name="username" autoComplete="username" maxLength="320" placeholder="Opțional — poți completa direct în CareLink" /></label>
-        <label>Parolă<input name="password" type="password" autoComplete="current-password" maxLength="1024" placeholder="Opțional" /></label>
-        <p className="carelink-help">Se deschide o fereastră CareLink. Completează acolo codul de verificare, dacă este cerut. Parola nu este salvată de aplicație.</p>
-        <button className="primary-button" disabled={busy}>{busy ? 'Se deschide…' : 'Continuă în CareLink'}</button>
+      {status.authenticated && <form className="carelink-form carelink-range" onSubmit={event => {
+        event.preventDefault();
+        action('/api/carelink/sync', { range: { from, to } });
+      }}>
+        <DateRangePicker from={from} to={to} disabled={busy || status.state === 'syncing'}
+          onChange={range => { setFrom(range.from); setTo(range.to); }} />
+        <button className="primary-button" disabled={busy || status.state === 'syncing'}>{status.state === 'syncing' ? 'Se descarcă…' : 'Descarcă perioada'}</button>
       </form>}
-      {(active || status.message) && <p className="carelink-status" role="status">{status.message}</p>}
-      {active && <div className="carelink-actions"><button className="primary-button" disabled={busy || ['connecting', 'syncing'].includes(status.state)} onClick={() => action('/api/carelink/sync', {})}>{status.mode === 'normal' ? 'Verifică descărcările' : 'Sincronizează'}</button><button className="text-button" disabled={busy} onClick={() => action('/api/carelink/disconnect', {})}>{status.mode === 'normal' ? 'Oprește preluarea' : 'Deconectează'}</button></div>}
+      {(status.state !== 'connected' && status.state !== 'ready' && (active || status.message)) && <p className="carelink-status" role="status">{status.message}</p>}
+      {status.state === 'awaiting_login' && <button className="secondary-button" disabled={busy} onClick={() => action('/api/carelink/check-login', {})}>{busy ? 'Se verifică…' : 'Verifică sesiunea'}</button>}
       {status.state === 'error' && <button className="text-button" disabled={busy} onClick={() => action('/api/carelink/disconnect', {})}>Resetează sesiunea</button>}
     </dialog>
   </>;

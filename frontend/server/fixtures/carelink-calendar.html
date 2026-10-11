@@ -1,0 +1,89 @@
+<!doctype html>
+<!-- Reproduces the public Reports component's DOM and staged Apply behavior.
+     All dates and values here are synthetic. No CareLink scripts or APIs are used. -->
+<app-reporting-period>
+  <lib-date-range-picker>
+    <div style="width:0;height:0;overflow:hidden">
+      <input readonly formcontrolname="start" value="1/10/2026">
+      <input readonly formcontrolname="end" value="10/10/2026">
+    </div>
+    <button id="date-range-button" onclick="openCalendar()">10/01/2026 - 10/10/2026</button>
+    <span id="r-reporting-period-picker-text">01/10/2026 - 10/10/2026 (10 days)</span>
+  </lib-date-range-picker>
+</app-reporting-period>
+<mat-legacy-datepicker-content hidden>
+  <mat-legacy-calendar style="display:block">
+    <button class="mat-legacy-calendar-previous-button" onclick="firstYear -= 24; showYears()">Previous</button>
+    <button class="mat-legacy-calendar-period-button" onclick="showYears()">OCT 2026</button>
+    <button class="mat-legacy-calendar-next-button" onclick="firstYear += 24; showYears()">Next</button>
+    <div id="view"></div>
+  </mat-legacy-calendar>
+  <button id="date-range-cancel" onclick="closeCalendar()">Cancel</button>
+  <button id="date-range-apply" onclick="applyRange()">Apply</button>
+</mat-legacy-datepicker-content>
+<script>
+  let firstYear = 2016, year = 2026, month = 9, pending = [];
+  window.steps = [];
+  function closeCalendar() { document.querySelector('mat-legacy-datepicker-content').hidden = true; }
+  function openCalendar() {
+    pending = [];
+    document.querySelector('mat-legacy-datepicker-content').hidden = false;
+    document.querySelector('#date-range-apply').disabled = true;
+    showDays();
+  }
+  function showYears() {
+    const view = document.createElement('mat-legacy-multi-year-view');
+    for (let value = firstYear; value < firstYear + 24; value++) {
+      const button = document.createElement('button');
+      button.textContent = value;
+      button.onclick = () => { year = value; window.steps.push(['year', value]); showMonths(); };
+      view.append(button);
+    }
+    document.querySelector('#view').replaceChildren(view);
+  }
+  function showMonths() {
+    const view = document.createElement('mat-legacy-year-view');
+    for (let value = 0; value < 12; value++) {
+      const button = document.createElement('button');
+      button.textContent = new Date(year, value, 1).toLocaleString('en-US', { month: 'short' }).toUpperCase();
+      button.setAttribute('aria-label', new Date(year, value, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' }));
+      button.onclick = () => { month = value; window.steps.push(['month', value]); showDays(); };
+      view.append(button);
+    }
+    document.querySelector('#view').replaceChildren(view);
+  }
+  function showDays() {
+    const view = document.createElement('mat-legacy-month-view');
+    for (let day = 1; day <= new Date(year, month + 1, 0).getDate(); day++) {
+      const date = new Date(year, month, day);
+      const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const button = document.createElement('button');
+      button.textContent = day;
+      button.setAttribute('aria-label', `${day}/${month + 1}/${year}`);
+      button.setAttribute('aria-pressed', 'false');
+      button.disabled = window.unavailableDate === key;
+      button.onclick = () => {
+        pending.push(date);
+        window.steps.push(['date', key]);
+        setTimeout(() => {
+          button.setAttribute('aria-pressed', 'true');
+          document.querySelector('#date-range-apply').disabled = pending.length !== 2;
+        }, window.selectionDelay || 0);
+      };
+      view.append(button);
+    }
+    document.querySelector('#view').replaceChildren(view);
+  }
+  function applyRange() {
+    window.steps.push(['apply']);
+    const dmy = date => `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
+    document.querySelector('input[formcontrolname="start"]').value = dmy(pending[0]);
+    document.querySelector('input[formcontrolname="end"]').value = dmy(pending[1]);
+    // CareLink can clamp the applied period independently of the input values.
+    const end = window.clampEnd ? new Date(pending[1].getTime() - 86400000) : pending[1];
+    const label = `${dmy(pending[0])} - ${dmy(end)}`;
+    document.querySelector('#date-range-button').textContent = label;
+    document.querySelector('#r-reporting-period-picker-text').textContent = label;
+    closeCalendar();
+  }
+</script>

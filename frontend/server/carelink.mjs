@@ -1,3 +1,4 @@
+import { activateControl } from './controls.mjs';
 import { chromium } from 'playwright';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -5,20 +6,32 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readDownloadedCsv } from './parser.mjs';
-import { DownloadWatcher, downloadsDirectory } from './download-watcher.mjs';
 import { mergeEntries } from '../src/data.js';
+import { RangeSelectionError, setReportRange, validateRange } from './report-range.mjs';
 
 const LOGIN_URL = 'https://carelink.minimed.com/app/login';
-const normalize = value => value.normalize('NFD').replace(/\p{M}/gu, '').trim().toLowerCase();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const REPORTS = /^(reports?|rapoarte|rapporti|rapports|berichte|informes|relatórios|rapporten|raporty)$/i;
+const LOGOUT = /log\s*out|sign\s*out|deconectare|ieșire|iesire|esci|disconnetti|déconnexion|abmelden|cerrar sesión|terminar sessão|uitloggen|wyloguj/i;
+
+function carelinkUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && ['carelink.minimed.com', 'carelink.minimed.eu'].includes(url.hostname) ? url : null;
+  } catch { return null; }
+}
 
 export function browserOptions({ headless = false } = {}) {
   const systemBrowser = process.env.CARELINK_BROWSER_PATH || ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'].find(existsSync);
-  return { headless, ...(systemBrowser ? { executablePath: systemBrowser } : {}) };
+  return { headless, args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
+    ...(systemBrowser ? { executablePath: systemBrowser } : {}) };
 }
 
 async function visible(locator) {
-  return locator.first().isVisible().catch(() => false);
+  try {
+    for (const item of await locator.all()) if (await item.isVisible()) return true;
+  } catch { /* A page can navigate or close during inspection; check again later. */ }
+  return false;
 }
 
 export class CareLinkSession {
@@ -37,7 +50,8 @@ export class CareLinkSession {
 
   status() {
     return { state: this.state, message: this.message, revision: this.revision, dataVersion: this.dataVersion, updatedAt: this.updatedAt || null,
-      mode: this.normalMode ? 'normal' : 'automated', downloadDirectory: downloadsDirectory() };
+      authenticated: Boolean(this.authenticated && this.context), requestedRange: this.requestedRange || null,
+      windowBackgrounded: Boolean(this.windowBackgrounded) };
   }
 
   addEntries(entries) {
@@ -48,37 +62,9 @@ export class CareLinkSession {
     this.updatedAt = new Date().toISOString();
   }
 
-  async startNormalLogin() {
-    // Opening another CareLink tab must not reset the active download monitor.
-    if (this.normalMode && this.watcher && !this.watcher.stopped) return;
-    await this.disconnect();
-    const generation = this.generation;
-    this.normalMode = true;
-    const watcher = new DownloadWatcher({ onEntries: entries => {
-      if (generation !== this.generation) return;
-      this.addEntries(entries);
-      this.state = 'ready';
-      this.message = 'Exportul descărcat a fost preluat. Calendarul a fost actualizat.';
-    } });
-    this.watcher = watcher;
-    try {
-      await watcher.start();
-      if (generation !== this.generation) { watcher.stop(); return; }
-      this.state = 'awaiting_export';
-      this.message = `Autentifică-te în browserul tău, apoi descarcă Data Export (CSV) în ${downloadsDirectory()}. Fișierele CareLink noi sunt preluate automat.`;
-    } catch {
-      if (generation !== this.generation) return;
-      this.normalMode = false;
-      this.state = 'error';
-      this.message = `Folderul de descărcări nu poate fi citit: ${downloadsDirectory()}. Configurează CARELINK_DOWNLOAD_DIR sau folosește Importă CSV.`;
-      throw new Error(this.message);
-    }
-  }
-
-  startLogin(credentials) {
-    if (this.browser || this.normalMode || this.state === 'connecting') throw new Error('Există deja o sesiune. Deconectează-te înainte de o conectare nouă.');
+  startLogin(credentials = {}) {
+    if (this.browser || this.state === 'connecting') throw new Error('Există deja o sesiune. Deconectează-te înainte de o conectare nouă.');
     const generation = ++this.generation;
-    this.loginRevision = this.revision;
     this.state = 'connecting';
     this.message = 'Se deschide CareLink…';
     this.connect(credentials, generation).catch(async () => {
@@ -96,6 +82,7 @@ export class CareLinkSession {
       if (generation !== this.generation) { await browser.close(); return; }
       this.browser = browser;
       const context = await browser.newContext({ acceptDownloads: true, locale: 'en-US' });
+      context.setDefaultTimeout(5000);
       this.context = context;
       const attach = page => {
         page.on('download', download => this.consumeDownload(download, generation));
@@ -105,115 +92,156 @@ export class CareLinkSession {
         if (this.browser !== browser || generation !== this.generation) return;
         this.browser = null;
         this.context = null;
+        this.authenticated = false;
         this.state = 'idle';
         this.message = 'Fereastra CareLink a fost închisă. Reconectează-te pentru sincronizare.';
       });
       const page = await context.newPage();
       this.page = page;
       await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      const warning = page.locator('#btn-unsupported-close');
-      await Promise.race([
-        warning.waitFor({ state: 'visible', timeout: 15000 }),
-        page.locator('#landing-login-button-id').waitFor({ state: 'visible', timeout: 15000 }),
-      ]).catch(() => {});
-      if (await visible(warning)) await warning.click();
-      const countrySelect = page.getByRole('combobox').first();
-      if (await countrySelect.waitFor({ state: 'visible', timeout: 15000 }).then(() => true, () => false)) {
-        await countrySelect.click();
-        const options = await page.getByRole('option').allTextContents();
-        const selected = options.find(option => normalize(option) === normalize(credentials.country));
-        if (selected) await page.getByRole('option').filter({ hasText: new RegExp(`^\\s*${selected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`) }).click();
-        else {
-          await page.keyboard.press('Escape');
-          this.message = 'Selectează țara în fereastra CareLink și continuă autentificarea.';
-        }
-        const signIn = page.locator('#landing-login-button-id');
-        if (selected && await visible(signIn)) await signIn.click();
-      }
       if (generation !== this.generation) return;
       this.state = 'awaiting_login';
-      this.message ||= 'Finalizează autentificarea în fereastra CareLink, inclusiv codul de verificare dacă este cerut.';
-      // Credentials are used only on the official login page and are never persisted.
-      await this.fillCredentials(page, credentials).catch(() => {});
+      this.message = 'Alege țara și limba English în CareLink și finalizează manual autentificarea, inclusiv mesajele de acceptare și verificările afișate.';
     } finally {
       credentials.password = '';
       credentials.username = '';
     }
     if (generation === this.generation && this.browser) {
-      if (this.state === 'awaiting_login') this.message = 'Finalizează autentificarea în fereastra CareLink. După conectare, exportul va fi încercat automat.';
       this.watchLogin(generation).catch(() => {});
     }
   }
 
-  async fillCredentials(page, { username, password }) {
-    if (!username || !password) return;
-    const passwordInput = page.locator('input[type="password"]').first();
-    await passwordInput.waitFor({ state: 'visible', timeout: 20000 });
-    const hostname = new URL(page.url()).hostname;
-    if (!/(^|\.)(minimed\.com|minimed\.eu|medtronic\.com|medtronicdiabetes\.com)$/.test(hostname)) return;
-    const userInput = page.locator('input[name="username"], input[name="email"], input[type="email"], input[autocomplete="username"], input#username').first();
-    if (!await visible(userInput)) return;
-    await userInput.fill(username);
-    await passwordInput.fill(password);
-    const submit = page.getByRole('button', { name: /^(sign in|log in|login|conectare|autentificare)$/i }).first();
-    if (await visible(submit)) await submit.click();
+  reportsLocator(page) {
+    return page.getByRole('link', { name: REPORTS })
+      .or(page.getByRole('button', { name: REPORTS }))
+      .or(page.locator('a[href*="/reports"]'))
+      .or(page.getByText(REPORTS));
   }
 
-  reportsLocator(page) {
-    return page.getByRole('link', { name: /^(reports|rapoarte)$/i })
-      .or(page.getByRole('button', { name: /^(reports|rapoarte)$/i }))
-      .or(page.locator('a[href*="/reports"]'));
+  async checkLogin(generation = this.generation) {
+    const context = this.context;
+    if (!context || generation !== this.generation) return false;
+    for (const page of context.pages()) {
+      try {
+        if (page.isClosed() || !carelinkUrl(page.url())) continue;
+        const frames = page.frames();
+        // A visible login/MFA form takes precedence over a dashboard URL during redirects.
+        let loginVisible = false;
+        for (const frame of frames) {
+          if (await visible(frame.locator('input[type="password"], input[autocomplete="one-time-code"], #landing-login-button-id, [role="dialog"], [role="alertdialog"], dialog[open], mat-dialog-container, mat-legacy-dialog-container'))) loginVisible = true;
+        }
+        if (loginVisible) continue;
+        for (const frame of frames) {
+          const url = carelinkUrl(frame.url());
+          if (!url) continue;
+          const reports = await visible(this.reportsLocator(frame));
+          const exported = await visible(this.exportLocator(frame));
+          const logout = await visible(frame.getByRole('button', { name: LOGOUT }).or(frame.getByRole('link', { name: LOGOUT })));
+          const dashboard = /^\/app\/dashboard\/?$/.test(url.pathname)
+            && await visible(frame.locator('main, [role="main"], nav, [role="navigation"], header, mat-toolbar, app-dashboard, [class*="dashboard"]'));
+          if (!reports && !exported && !logout && !dashboard) continue;
+          if (generation !== this.generation || context !== this.context || page.isClosed()) return false;
+          this.page = page;
+          this.reportView = frame;
+          const justConnected = !this.authenticated;
+          this.authenticated = true;
+          if (['connecting', 'awaiting_login'].includes(this.state)) {
+            this.state = 'connected';
+            this.message = 'Conectat la CareLink. Alege perioada din aplicație pentru descărcare.';
+          }
+          if (justConnected && /^\/app\/dashboard\/?$/.test(url.pathname)) {
+            this.reportsNavigation = this.navigateToReports(page).catch(() => {
+              this.message = 'Conectat. Reports nu s-a încărcat încă; voi reîncerca la descărcarea perioadei.';
+            });
+            await this.reportsNavigation;
+          }
+          if (justConnected && generation === this.generation && context === this.context) this.windowBackgrounded = await this.backgroundWindow(page);
+          return true;
+        }
+      } catch { /* Keep checking other pages when a tab navigates or closes. */ }
+    }
+    return false;
   }
 
   exportLocator(page) {
-    return page.getByRole('button', { name: /data export.*csv|export.*csv/i })
+    return page.locator('#p-button-export-reports').or(page.getByRole('button', { name: /data export.*csv|export.*csv/i }))
       .or(page.getByRole('link', { name: /data export.*csv|export.*csv/i }))
-      .or(page.getByText(/^Data Export\s*\(CSV\)$/i));
+      .or(page.getByText(/^Data Export\s*\(CSV\)$/i))
+      .and(page.locator(':not(#p-button-export-reports-all-data):not(#p-button-export-reports-all-data *)'));
+  }
+
+  async navigateToReports(page) {
+    const url = carelinkUrl(page.url());
+    if (!url) throw new RangeSelectionError('Pagina CareLink nu este disponibilă. Revino la sesiunea autentificată.');
+    if (!/^\/app\/reports\/?$/.test(url.pathname)) {
+      await page.goto(new URL('/app/reports', url.origin).href, { waitUntil: 'domcontentloaded', timeout: 12000 });
+    }
+    this.reportView = page.mainFrame();
+  }
+
+  async backgroundWindow(page) {
+    let control;
+    try {
+      // Only minimize the Chromium window owned by this CareLink session.
+      control = await page.context().newCDPSession(page);
+      const { windowId } = await control.send('Browser.getWindowForTarget');
+      await control.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+      return true;
+    } catch { return false; /* Window managers may reject minimization; keep the login usable. */ }
+    finally { await control?.detach().catch(() => {}); }
   }
 
   async watchLogin(generation) {
     const deadline = Date.now() + 10 * 60 * 1000;
     while (generation === this.generation && this.context && Date.now() < deadline) {
-      for (const page of this.context.pages()) {
-        if (!/^https:\/\/carelink\.minimed\.(com|eu)\//.test(page.url())) continue;
-        if (await visible(this.reportsLocator(page)) || await visible(this.exportLocator(page))) {
-          this.page = page;
-          if (this.revision > this.loginRevision) return;
-          this.state = 'connected';
-          this.message = 'Conectat la CareLink.';
-          await this.sync();
-          return;
-        }
-      }
+      if (await this.checkLogin(generation)) return;
       await delay(1500);
     }
     if (generation === this.generation && this.state === 'awaiting_login') {
-      this.message = 'Autentificarea nu a fost confirmată. Completează login-ul și apasă Sincronizează, sau reconectează-te.';
+      this.message = 'Autentificarea nu a fost confirmată. Dacă vezi dashboard-ul CareLink, apasă Verifică sesiunea.';
     }
   }
 
-  async sync() {
-    if (this.normalMode) {
-      await this.watcher?.scan();
-      return;
-    }
+  async sync(range) {
+    if (range) range = validateRange(range);
     if (!this.context || !this.page || this.page.isClosed()) throw new Error('Deschide mai întâi o sesiune CareLink.');
-    if (this.syncBusy) return;
+    if (this.syncBusy || this.parsingDownload) throw new Error('Un export este deja în curs. Așteaptă finalizarea lui.');
     this.syncBusy = true;
     const generation = this.generation;
     try {
       this.state = 'syncing';
       this.message = 'Se caută exportul CSV în Reports…';
+      await this.reportsNavigation;
+      if (generation !== this.generation) return;
       const page = this.page;
-      if (!await visible(this.exportLocator(page))) {
-        const reports = this.reportsLocator(page);
-        if (await visible(reports)) {
-          await reports.first().click();
-          await this.exportLocator(page).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-        }
+      let view = this.reportView && !this.reportView.isDetached() ? this.reportView : page;
+      if (/login|signin/i.test(new URL(page.url()).pathname)) {
+        this.authenticated = false;
+        this.state = 'awaiting_login';
+        this.message = 'Sesiunea CareLink necesită autentificare. Finalizează login-ul în fereastra CareLink.';
+        this.watchLogin(generation).catch(() => {});
+        return;
       }
-      const exportButton = this.exportLocator(page).first();
-      if (!await visible(exportButton) || !await exportButton.isEnabled()) {
+      if (!await visible(this.exportLocator(view))) {
+        if (carelinkUrl(page.url())) {
+          this.message = 'Se deschide pagina Reports…';
+          await this.navigateToReports(page);
+          view = this.reportView;
+        } else {
+          const reports = this.reportsLocator(view).filter({ visible: true }).first();
+          if (await visible(reports)) await reports.click({ timeout: 5000 });
+        }
+        await this.exportLocator(view).filter({ visible: true }).first().waitFor({ state: 'visible', timeout: 12000 });
+      }
+      const exportButton = this.exportLocator(view).filter({ visible: true }).first();
+      if (range) {
+        await setReportRange(view, range, { background: Boolean(this.windowBackgrounded), onProgress: message => { if (generation === this.generation) this.message = message; } });
+        if (generation !== this.generation) return;
+        this.requestedRange = range;
+      }
+      if (await visible(exportButton)) await exportButton.and(view.locator(':not(:disabled):not([aria-disabled="true"])'))
+        .waitFor({ state: 'visible', timeout: 10000 });
+      if (!await visible(exportButton) || !await exportButton.isEnabled({ timeout: 5000 })) {
         this.state = 'awaiting_export';
         this.message = 'În fereastra CareLink, deschide Reports, alege perioada și apasă Data Export (CSV). Fișierul va fi preluat automat.';
         return;
@@ -221,11 +249,11 @@ export class CareLinkSession {
       this.message = 'Se descarcă CSV-ul pentru perioada selectată în CareLink…';
       const downloaded = page.waitForEvent('download', { timeout: 60000 });
       // A download listener on every page handles parsing and state changes.
-      await Promise.all([downloaded, exportButton.click()]);
-    } catch {
+      await Promise.all([downloaded, activateControl(exportButton, { background: Boolean(this.windowBackgrounded) })]);
+    } catch (error) {
       if (generation === this.generation && this.browser) {
         this.state = 'awaiting_export';
-        this.message = 'Exportul automat nu s-a finalizat. Poți apăsa Data Export (CSV) în fereastra CareLink; descărcarea va fi preluată automat.';
+        this.message = error instanceof RangeSelectionError ? error.message : 'Exportul automat nu s-a finalizat. Poți apăsa Data Export (CSV) în fereastra CareLink; descărcarea va fi preluată automat.';
       }
     } finally { if (generation === this.generation) this.syncBusy = false; }
   }
@@ -268,15 +296,17 @@ export class CareLinkSession {
     const browser = this.browser;
     this.browser = null;
     this.context = null;
+    this.authenticated = false;
+    this.windowBackgrounded = false;
     this.page = null;
+    this.reportView = null;
+    this.reportsNavigation = null;
     await browser?.close().catch(() => {});
   }
 
   async disconnect() {
     this.generation++;
-    this.watcher?.stop();
-    this.watcher = null;
-    this.normalMode = false;
+    this.requestedRange = null;
     await this.closeBrowser();
     // Disconnect authentication and monitoring, retaining the imported history.
     this.state = 'idle';

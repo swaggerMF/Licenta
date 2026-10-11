@@ -1,4 +1,6 @@
-# Calendar glicemic
+# TeD
+
+**Your Type 1 bear analyst**
 
 Calendar React care reconstruiește graficele zilnice din exportul CSV al senzorului. Fiecare zi are un grafic pe 24 de ore; selectarea ei deschide graficul detaliat, media, minimul și maximul. Poți naviga între luni și importa alte CSV-uri.
 
@@ -33,7 +35,7 @@ La deschidere apare o pagină cu **Login with CareLink** și opțiunea secundar�
 
 ### Fluxul experimental cu browser automat
 
-1. Apasă **Login with CareLink**, apoi **Continuă în CareLink**.
+1. Apasă **Login with CareLink**. Butonul deschide direct fereastra CareLink, fără un dialog intermediar în aplicație. După login, se deschide selectorul de perioadă.
 2. În fereastra oficială CareLink, alege țara contului și limba **English**, apoi continuă spre formularul de autentificare. Țara se selectează direct în CareLink.
 3. Introdu utilizatorul și parola direct în fereastra oficială, apoi completează eventualul CAPTCHA sau cod de verificare. Interfața aplicației nu mai cere parola.
 4. Lasă fereastra CareLink deschisă și revino în aplicație. După detectarea autentificării în Dashboard, aplicația deschide automat `/app/reports` pe domeniul sesiunii existente. După confirmarea loginului, fereastra CareLink este minimizată automat, iar aplicația solicită focalizarea propriei ferestre. Revenirea în prim-plan depinde de regulile browserului și ale desktopului. Dialogul afișează un calendar cu date în format **zz.ll.aaaa**, săptămâni începând luni, interval evidențiat și opțiuni rapide pentru ultimele 7/30 de zile încheiate sau luna curentă până ieri. Ziua de azi poate să nu fie disponibilă încă în CareLink. În prima zi a lunii, scurtătura pentru luna curentă este dezactivată. Login-ul nu pornește automat un export.
