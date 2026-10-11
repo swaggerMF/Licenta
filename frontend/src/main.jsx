@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { groupDays, mergeEntries, sensorReason, stats } from './data.js';
 import Chart from './Chart.jsx';
 import CareLinkPanel from './CareLinkPanel.jsx';
+import TedMascot from './TedMascot.jsx';
 import { carelinkRequest } from './carelink-api.js';
 import './styles.css';
 
@@ -17,7 +18,7 @@ function App() {
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'light');
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#101b18' : '#155e52';
+    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#111c28' : '#287da8';
   }, [theme]);
   function toggleTheme() {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -33,6 +34,14 @@ function App() {
   const [entered, setEntered] = useState(false);
   const fileRef = useRef(null);
   const dataLoaded = useRef(false);
+  const scrollToToday = useRef(false);
+  useEffect(() => {
+    if (!scrollToToday.current) return;
+    scrollToToday.current = false;
+    const day = document.querySelector('.day-cell.selected');
+    day?.focus({ preventScroll: true });
+    day?.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  }, [selected, month]);
   const days = useMemo(() => groupDays(entries), [entries]);
   const keys = useMemo(() => [...days.keys()].sort(), [days]);
   const monthPrefix = dateKey(month).slice(0, 7);
@@ -105,12 +114,15 @@ function App() {
     </button>
     <main className={entered ? '' : 'entry-page'}>
       <section className={entered ? 'page-heading' : 'entry-heading'}>
-        <div className="ted-brand">
+        <div className={entered ? 'ted-brand ted-dashboard-brand' : 'ted-brand'}>
+          {entered && <TedMascot onToday={() => { scrollToToday.current = true; selectDay(dateKey(new Date())); }} />}
+          <div>
           <div className={entered ? undefined : 'entry-brand-row'}>
             {!entered && <div className="entry-mascot"><img src={`${import.meta.env.BASE_URL}images/ted-bear.png`} alt="TeD, un ursuleț de pluș care ține în brațe o pompă de insulină" width="1254" height="1254" fetchPriority="high" /></div>}
             <h1>TeD</h1>
           </div>
           {entered ? <p className="ted-dashboard-caption">Select a day. Observe patterns.</p> : <p className="ted-tagline">Your Type 1 bear analyst</p>}
+          </div>
         </div>
 
         <div className="import-controls"><CareLinkPanel landing={!entered} onAuthenticated={() => setEntered(true)} onEntries={(data, options) => { loadEntries(data, options); setEntered(true); }} /><button className={entered ? 'primary-button' : 'secondary-button entry-import'} onClick={() => fileRef.current.click()} disabled={loading || importing}>{importing ? 'Se importă…' : entered ? 'Importă CSV' : 'Import CSV'}</button><input ref={fileRef} className="visually-hidden" aria-label="Importă fișier CSV" type="file" accept=".csv,text/csv" onChange={importFile} /></div>
